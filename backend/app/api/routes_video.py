@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import uuid
 from pathlib import Path
+from urllib.parse import urlparse
 
 from fastapi import APIRouter, File, UploadFile
+from pydantic import BaseModel
 
 from app.config import settings
 from app.errors import AppError, StorageError, UnsupportedVideoFormatError
 from app.storage.paths import check_storage_quota, find_upload_source, upload_dir
+from app.video_ingestion.remote_source import DirectUrlSource, YouTubeSource, is_youtube_url
 from app.video_metadata.probe import VideoMetadata, probe_video
 
 router = APIRouter(prefix="/api/video", tags=["video"])
@@ -73,3 +76,44 @@ async def get_video_metadata(upload_id: str):
     source_path = find_upload_source(upload_id)
     metadata = await probe_video(source_path)
     return {"upload_id": upload_id, "filename": source_path.name, "video": _video_dict(metadata)}
+
+
+class IngestUrlRequest(BaseModel):
+    url: str
+
+
+@router.post("/ingest-url")
+async def ingest_video_url(payload: IngestUrlRequest):
+    """Ingest a video from a remote URL (section 6/7). See app.video_ingestion.remote_source
+    for the SSRF/size/timeout/authorization constraints this goes through."""
+    parsed = urlparse(payload.url)
+    if parsed.scheme not in ("http", "https"):
+        raise UnsupportedVideoFormatError(f"Unsupported URL scheme '{parsed.scheme}'. Only http/https are allowed.")
+
+    check_storage_quota(settings.MAX_UPLOAD_SIZE_BYTES)
+
+    upload_id = uuid.uuid4().hex[:16]
+    dest_dir = upload_dir(upload_id)
+
+    source = YouTubeSource(payload.url) if is_youtube_url(payload.url) else DirectUrlSource(payload.url)
+
+    try:
+        source_path = await source.obtain(dest_dir)
+    except AppError:
+        for f in dest_dir.glob("*"):
+            f.unlink(missing_ok=True)
+        raise
+
+    try:
+        metadata = await probe_video(source_path)
+    except AppError:
+        for f in dest_dir.glob("*"):
+            f.unlink(missing_ok=True)
+        raise
+
+    return {
+        "upload_id": upload_id,
+        "filename": source_path.name,
+        "source_type": source.source_type,
+        "video": _video_dict(metadata),
+    }

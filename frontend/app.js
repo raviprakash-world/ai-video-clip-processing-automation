@@ -57,6 +57,19 @@ async function api(path, options = {}) {
 }
 
 // --- Step 1: upload -----------------------------------------------------
+function onVideoReady(data, verb) {
+  state.uploadId = data.upload_id;
+  state.videoMeta = data.video;
+  const v = data.video;
+  setStatus(
+    $("video-status"),
+    `${verb}. Duration ${v.duration_seconds.toFixed(1)}s, ${v.width}x${v.height}, ` +
+      `${v.video_codec}/${v.audio_codec || "no audio"}.`,
+    "ok"
+  );
+  $("step-json").hidden = false;
+}
+
 $("upload-btn").addEventListener("click", async () => {
   const fileInput = $("video-file");
   if (!fileInput.files.length) {
@@ -68,18 +81,28 @@ $("upload-btn").addEventListener("click", async () => {
   setStatus($("video-status"), "Uploading and validating video...", "");
   try {
     const data = await api("/api/video/upload", { method: "POST", body: form });
-    state.uploadId = data.upload_id;
-    state.videoMeta = data.video;
-    const v = data.video;
-    setStatus(
-      $("video-status"),
-      `Uploaded. Duration ${v.duration_seconds.toFixed(1)}s, ${v.width}x${v.height}, ` +
-        `${v.video_codec}/${v.audio_codec || "no audio"}.`,
-      "ok"
-    );
-    $("step-json").hidden = false;
+    onVideoReady(data, "Uploaded");
   } catch (e) {
     setStatus($("video-status"), `Upload failed: ${e.message}`, "err");
+  }
+});
+
+$("fetch-url-btn").addEventListener("click", async () => {
+  const url = $("video-url").value.trim();
+  if (!url) {
+    setStatus($("video-status"), "Paste a video URL first.", "err");
+    return;
+  }
+  setStatus($("video-status"), "Downloading and validating video from URL...", "");
+  try {
+    const data = await api("/api/video/ingest-url", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ url }),
+    });
+    onVideoReady(data, `Fetched (${data.source_type})`);
+  } catch (e) {
+    setStatus($("video-status"), `URL ingestion failed: ${e.message}`, "err");
   }
 });
 
