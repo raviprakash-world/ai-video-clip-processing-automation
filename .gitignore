@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+storage/uploads/*
+!storage/uploads/.gitkeep
+storage/jobs/*
+!storage/jobs/.gitkeep
+storage/idempotency_index.json
+.DS_Store
+*.log
+.pytest_cache/

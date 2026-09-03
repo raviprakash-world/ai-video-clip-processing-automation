@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>AI Video Clip Processing Automation</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header>
+    <h1>AI Video Clip Processing Automation</h1>
+    <p class="subtitle">Turn AI-selected timestamps into polished vertical clips. This app does not analyze content &mdash; it executes the JSON you provide.</p>
+  </header>
+
+  <main>
+    <section class="card" id="step-video">
+      <h2>Step 1 &middot; Source Video</h2>
+      <div class="row">
+        <input type="file" id="video-file" accept=".mp4,.mov,.webm,.mkv,.m4v" />
+        <button id="upload-btn">Upload Video</button>
+      </div>
+      <div id="video-status" class="status"></div>
+    </section>
+
+    <section class="card" id="step-json" hidden>
+      <h2>Step 2 &middot; AI Analysis JSON</h2>
+      <textarea id="json-input" rows="10" placeholder="Paste the AI analysis JSON here..."></textarea>
+      <div class="row">
+        <button id="validate-btn">Validate JSON</button>
+        <button id="load-sample-btn" class="secondary">Load sample JSON</button>
+      </div>
+      <div id="json-status" class="status"></div>
+    </section>
+
+    <section class="card" id="step-clips" hidden>
+      <h2>Step 3 &middot; Review Clips</h2>
+      <div id="clips-list"></div>
+    </section>
+
+    <section class="card" id="step-config" hidden>
+      <h2>Step 4 &middot; Processing Configuration</h2>
+      <div class="config-grid">
+        <label>Output width <input type="number" id="cfg-width" value="1080" /></label>
+        <label>Output height <input type="number" id="cfg-height" value="1920" /></label>
+        <fieldset>
+          <legend>Crop strategy</legend>
+          <label><input type="radio" name="crop" value="CENTER_CROP" checked /> Center crop</label>
+          <label><input type="radio" name="crop" value="FIT_WITH_BLUR_BACKGROUND" /> Fit + blur background</label>
+        </fieldset>
+        <fieldset>
+          <legend>Watermark</legend>
+          <label><input type="radio" name="watermark" value="none" checked /> None</label>
+          <label><input type="radio" name="watermark" value="authorized_overlay" /> Authorized overlay (your own logo)</label>
+          <div id="overlay-controls" hidden>
+            <input type="file" id="overlay-file" accept=".png" />
+            <label><input type="checkbox" id="overlay-authorized" /> I confirm I own or am authorized to add this overlay</label>
+          </div>
+        </fieldset>
+      </div>
+      <button id="generate-btn">Generate Clips</button>
+      <div id="config-status" class="status"></div>
+    </section>
+
+    <section class="card" id="step-results" hidden>
+      <h2>Step 5 &middot; Progress &amp; Results</h2>
+      <div id="progress-list"></div>
+      <div id="results-list"></div>
+      <a id="download-all" class="button secondary" hidden>Download All (.zip)</a>
+    </section>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>
