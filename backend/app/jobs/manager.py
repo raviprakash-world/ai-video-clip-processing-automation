@@ -55,6 +55,18 @@ class JobManager:
         async with self._index_lock:
             settings.IDEMPOTENCY_INDEX_PATH.write_text(json.dumps(self._idempotency_index, indent=2))
 
+    def _outputs_still_on_disk(self, job: ProcessingJob) -> bool:
+        """A COMPLETED job's cache entry is only trustworthy if every completed
+        clip's output file is still actually present (retention cleanup, a
+        manually cleared storage dir, or disk loss can all invalidate it)."""
+        jdir = job_dir_path(job.job_id)
+        for clip_job in job.clips.values():
+            if clip_job.status != ClipStatus.COMPLETED:
+                continue
+            if not clip_job.output_file or not (jdir / clip_job.output_file).exists():
+                return False
+        return True
+
     # -- lookups -------------------------------------------------------------------------
     def get_job(self, job_id: str) -> ProcessingJob:
         job = self._jobs.get(validate_id(job_id, kind="job_id"))
@@ -81,9 +93,13 @@ class JobManager:
         existing_job_id = self._idempotency_index.get(idempotency_key)
         if existing_job_id and existing_job_id in self._jobs:
             existing = self._jobs[existing_job_id]
-            if existing.status == JobStatus.COMPLETED:
+            if existing.status == JobStatus.COMPLETED and self._outputs_still_on_disk(existing):
                 existing.reused = True
                 return existing
+            # The cached record's status says COMPLETED but its output files are
+            # gone (cleaned up, moved, disk issue) -- the cache entry is stale.
+            # Fall through and reprocess rather than reporting a false success.
+            self._idempotency_index.pop(idempotency_key, None)
 
         job_id = uuid.uuid4().hex[:16]
         jdir = job_dir_path(job_id)
