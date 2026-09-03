@@ -34,8 +34,14 @@ def _check_required_fields(raw: dict, required: tuple[str, ...], *, where: str) 
         )
 
 
-def parse_and_check_shape(raw_json: str | dict) -> dict:
-    """Stage 1: raw text/dict -> dict with all required keys present (pre-pydantic)."""
+def parse_json_only(raw_json: str | dict) -> dict:
+    """Stage 0: raw text/dict -> dict. No assumptions about shape yet.
+
+    Used both by the normal validation pipeline and by the foreign-format
+    translation layer (app.json_validation.foreign_formats), which needs a
+    plain dict to run its detectors against before any required-field
+    checks happen.
+    """
     if isinstance(raw_json, str):
         try:
             data = jsonlib.loads(raw_json)
@@ -46,6 +52,12 @@ def parse_and_check_shape(raw_json: str | dict) -> dict:
 
     if not isinstance(data, dict):
         raise InvalidJsonError("The top-level JSON value must be an object.")
+    return data
+
+
+def parse_and_check_shape(raw_json: str | dict) -> dict:
+    """Stage 1: raw text/dict -> dict with all required keys present (pre-pydantic)."""
+    data = parse_json_only(raw_json)
 
     _check_required_fields(data, _TOP_LEVEL_REQUIRED, where="Top-level document")
 
