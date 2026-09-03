@@ -1,5 +1,7 @@
 # AI Video Clip Processing Automation
 
+[![GitHub repo](https://img.shields.io/badge/GitHub-raviprakash--world%2Fai--video--clip--processing--automation-blue?logo=github)](https://github.com/raviprakash-world/ai-video-clip-processing-automation)
+
 An execution engine, not a content-analysis engine. It takes a source video
 plus an externally-generated AI analysis JSON (clip timestamps + metadata)
 and produces polished 9:16 vertical MP4 clips. It performs **no** video
