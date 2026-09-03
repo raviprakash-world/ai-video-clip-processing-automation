@@ -53,9 +53,51 @@ synthetic source video and runs it through the full extract → crop → encode
 | `app/watermark` | Authorization-gated overlay-add / region-remove (no automatic watermark detection) |
 | `app/clip_processing/pipeline.py` | The only module that assembles ffmpeg command lines |
 | `app/output` | Filesystem-safe naming, per-clip metadata sidecar, post-encode ffprobe validation |
-| `app/jobs` | Job/clip state machine, concurrency-limited orchestration, idempotency hashing |
+| `app/jobs` | Job/clip state machine, concurrency-limited orchestration, idempotency hashing, retention sweep |
 | `app/storage` | Path-traversal-safe job/upload directories, quota + retention |
+| `app/video_ingestion/ingest_manager.py` | Tracks real download progress for URL/YouTube ingestion so the UI can poll it |
 | `app/api` | FastAPI routes only — no business logic |
+
+## Progress reporting
+
+- **File upload** (Step 1, "Upload Video"): the browser already has the bytes,
+  so `app.js` uses `XMLHttpRequest`'s `upload.onprogress` for real, instant
+  byte-level progress — no polling needed.
+- **URL / YouTube ingestion** ("Fetch from URL"): the download happens
+  server-side, invisible to the browser, so `POST /api/video/ingest-url`
+  returns an `ingest_id` immediately and the frontend polls
+  `GET /api/video/ingest-url/{ingest_id}` every ~700ms. Progress comes from
+  real byte counts — `Content-Length` vs. bytes streamed for a direct URL,
+  yt-dlp's own `downloaded_bytes`/`total_bytes` progress hook for YouTube.
+  When total size truly isn't known yet, the UI shows an indeterminate
+  animated bar plus a running MB count instead of a fabricated percentage
+  (section 18: never fake progress).
+- Clip **processing** progress (Step 5) already worked this way — real
+  `-progress pipe:1` output parsed from the running ffmpeg process.
+
+## Retention / storage cleanup
+
+`RETENTION_HOURS` (default 24) controls how long a job's output clips (and
+the matching upload's source video) are kept before automatic deletion.
+This runs as a background asyncio task inside the FastAPI process itself
+(`app/jobs/retention.py`, started from `app/main.py`'s lifespan) every
+`RETENTION_CHECK_INTERVAL_MINUTES` (default 60) — no OS-level cron/launchd
+setup required, and it also runs once immediately at startup. A job whose
+processing task is still actively running is never swept, however old its
+directory looks. When a stale entry is removed, the in-memory job/idempotency
+caches are cleaned up to match — a completed-but-deleted job is never
+reported as a false "already have that, here it is" (see the idempotency
+fix in git history for exactly the bug this prevents).
+
+If you want cleanup to also happen while the server isn't running, there's
+a standalone equivalent at `backend/scripts/cleanup_expired.py` you can wire
+into a real system cron entry yourself, e.g.:
+
+```
+0 * * * * cd /path/to/backend && .venv/bin/python scripts/cleanup_expired.py >> /tmp/clip-cleanup.log 2>&1
+```
+
+This repo does not install that crontab entry for you.
 
 ## Security notes
 

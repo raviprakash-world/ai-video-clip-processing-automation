@@ -22,13 +22,14 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+from typing import Optional
 from urllib.parse import urljoin, urlparse
 
 import httpx
 
 from app.config import settings
 from app.errors import UnsupportedVideoFormatError, VideoDownloadFailedError, VideoNotFoundError
-from app.video_ingestion.source import VideoSource
+from app.video_ingestion.source import ProgressCallback, VideoSource
 from app.video_ingestion.ssrf_guard import ensure_public_host
 
 _ALLOWED_SCHEMES = ("http", "https")
@@ -41,7 +42,7 @@ class DirectUrlSource(VideoSource):
     def __init__(self, url: str):
         self.url = url
 
-    async def obtain(self, dest_dir: Path) -> Path:
+    async def obtain(self, dest_dir: Path, on_progress: Optional[ProgressCallback] = None) -> Path:
         dest_dir.mkdir(parents=True, exist_ok=True)
         tmp_path = dest_dir / "source.download"
 
@@ -75,7 +76,8 @@ class DirectUrlSource(VideoSource):
                             )
 
                         content_length = response.headers.get("content-length")
-                        if content_length and int(content_length) > settings.MAX_UPLOAD_SIZE_BYTES:
+                        total_bytes = int(content_length) if content_length else None
+                        if total_bytes and total_bytes > settings.MAX_UPLOAD_SIZE_BYTES:
                             raise VideoDownloadFailedError(
                                 "Remote file's reported size exceeds the maximum allowed download size."
                             )
@@ -89,6 +91,8 @@ class DirectUrlSource(VideoSource):
                                         "Remote file exceeded the maximum allowed download size while streaming."
                                     )
                                 f.write(chunk)
+                                if on_progress:
+                                    on_progress(size, total_bytes)
                     break
                 except httpx.TimeoutException as exc:
                     raise VideoDownloadFailedError("Timed out while downloading the video URL.") from exc
@@ -122,7 +126,7 @@ class YouTubeSource(VideoSource):
     def __init__(self, url: str):
         self.url = url
 
-    async def obtain(self, dest_dir: Path) -> Path:
+    async def obtain(self, dest_dir: Path, on_progress: Optional[ProgressCallback] = None) -> Path:
         parsed = urlparse(self.url)
         if parsed.scheme not in _ALLOWED_SCHEMES or (parsed.hostname or "").lower() not in _YOUTUBE_HOSTS:
             raise UnsupportedVideoFormatError(
@@ -141,6 +145,17 @@ class YouTubeSource(VideoSource):
         for stale in dest_dir.glob("source.*"):
             stale.unlink(missing_ok=True)
 
+        def _yt_dlp_progress_hook(d: dict) -> None:
+            # Runs on yt-dlp's own worker thread (see asyncio.to_thread below), not
+            # the event loop. Only ever does a cheap, thread-safe-enough attribute
+            # write into the caller's shared progress record -- never awaits, never
+            # touches the event loop directly.
+            if not on_progress or d.get("status") != "downloading":
+                return
+            downloaded = d.get("downloaded_bytes") or 0
+            total = d.get("total_bytes") or d.get("total_bytes_estimate")
+            on_progress(downloaded, total)
+
         max_height = settings.YTDLP_MAX_HEIGHT
         ydl_opts = {
             "format": f"bv*[height<={max_height}][ext=mp4]+ba[ext=m4a]/best[height<={max_height}][ext=mp4]/best",
@@ -151,6 +166,7 @@ class YouTubeSource(VideoSource):
             "quiet": True,
             "no_warnings": True,
             "retries": 2,
+            "progress_hooks": [_yt_dlp_progress_hook],
             # Deliberately no cookies, no age-gate/geo/DRM bypass, no authentication of
             # any kind: only content yt-dlp can fetch anonymously and legitimately is
             # supported. If a video requires sign-in or is otherwise restricted, this

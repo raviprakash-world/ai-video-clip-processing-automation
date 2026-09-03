@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import shutil
 from pathlib import Path
+from typing import Optional
 
 from app.errors import VideoNotFoundError
-from app.video_ingestion.source import VideoSource
+from app.video_ingestion.source import ProgressCallback, VideoSource
 
 
 class LocalFileSource(VideoSource):
@@ -15,7 +16,7 @@ class LocalFileSource(VideoSource):
     def __init__(self, existing_path: Path):
         self.existing_path = existing_path
 
-    async def obtain(self, dest_dir: Path) -> Path:
+    async def obtain(self, dest_dir: Path, on_progress: Optional[ProgressCallback] = None) -> Path:
         if not self.existing_path.exists():
             raise VideoNotFoundError(f"Uploaded source video was not found: {self.existing_path.name}")
         dest_dir.mkdir(parents=True, exist_ok=True)

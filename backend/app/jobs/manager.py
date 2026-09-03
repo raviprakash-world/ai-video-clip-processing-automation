@@ -26,6 +26,7 @@ from app.json_validation.video_bounds import check_all_clips
 from app.output.metadata_writer import write_clip_metadata
 from app.schemas.processing_config import ProcessingConfig
 from app.schemas.validated import ValidatedClip
+from app.storage.paths import cleanup_old_jobs
 from app.storage.paths import job_dir as job_dir_path
 from app.storage.paths import validate_id
 from app.video_ingestion.local_source import LocalFileSource
@@ -54,6 +55,29 @@ class JobManager:
     async def _save_index(self) -> None:
         async with self._index_lock:
             settings.IDEMPOTENCY_INDEX_PATH.write_text(json.dumps(self._idempotency_index, indent=2))
+
+    async def purge_expired(self, max_age_hours: float) -> list[str]:
+        """Delete job directories older than max_age_hours (section 8/21 retention)
+        and keep in-memory state (jobs dict, idempotency index) consistent with
+        what's actually left on disk afterward. A job with a still-running task
+        is never touched, however old its directory looks.
+        """
+        active_ids = frozenset(job_id for job_id, task in self._tasks.items() if not task.done())
+        removed = cleanup_old_jobs(max_age_hours, protected_ids=active_ids)
+        if not removed:
+            return removed
+
+        for job_id in removed:
+            self._jobs.pop(job_id, None)
+            self._tasks.pop(job_id, None)
+
+        stale_keys = [key for key, value in self._idempotency_index.items() if value in removed]
+        for key in stale_keys:
+            self._idempotency_index.pop(key, None)
+        if stale_keys:
+            await self._save_index()
+
+        return removed
 
     def _outputs_still_on_disk(self, job: ProcessingJob) -> bool:
         """A COMPLETED job's cache entry is only trustworthy if every completed

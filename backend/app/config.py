@@ -33,9 +33,14 @@ class Settings:
 
     # Concurrency
     MAX_CONCURRENT_JOBS: int = _int("MAX_CONCURRENT_JOBS", 2)
+    MAX_CONCURRENT_DOWNLOADS: int = _int("MAX_CONCURRENT_DOWNLOADS", 4)
 
-    # Retention (hours). 0 disables automatic cleanup.
-    RETENTION_HOURS: int = _int("RETENTION_HOURS", 0)
+    # Retention (hours). 0 disables automatic cleanup. Default: delete generated
+    # clips/uploads a day after their job directory was created, to keep disk
+    # usage bounded (section 8/21). Runs as a background sweep inside this
+    # process -- see app.jobs.retention -- every RETENTION_CHECK_INTERVAL_MINUTES.
+    RETENTION_HOURS: int = _int("RETENTION_HOURS", 24)
+    RETENTION_CHECK_INTERVAL_MINUTES: int = _int("RETENTION_CHECK_INTERVAL_MINUTES", 60)
 
     # Default encoding / output config (all overridable per-job via ProcessingConfig)
     DEFAULT_OUTPUT_WIDTH: int = _int("DEFAULT_OUTPUT_WIDTH", 1080)

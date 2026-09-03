@@ -57,6 +57,29 @@ async function api(path, options = {}) {
 }
 
 // --- Step 1: upload -----------------------------------------------------
+function showVideoProgress(label) {
+  $("video-progress").hidden = false;
+  $("video-progress-label").textContent = label;
+  setVideoProgressPct(0);
+}
+
+function setVideoProgressPct(pct) {
+  const fill = $("video-progress-fill");
+  if (pct === null || pct === undefined) {
+    fill.classList.add("indeterminate");
+    fill.style.width = "";
+    $("video-progress-pct").textContent = "";
+  } else {
+    fill.classList.remove("indeterminate");
+    fill.style.width = `${pct}%`;
+    $("video-progress-pct").textContent = `${pct.toFixed(0)}%`;
+  }
+}
+
+function hideVideoProgress() {
+  $("video-progress").hidden = true;
+}
+
 function onVideoReady(data, verb) {
   state.uploadId = data.upload_id;
   state.videoMeta = data.video;
@@ -70,21 +93,52 @@ function onVideoReady(data, verb) {
   $("step-json").hidden = false;
 }
 
-$("upload-btn").addEventListener("click", async () => {
+$("upload-btn").addEventListener("click", () => {
   const fileInput = $("video-file");
   if (!fileInput.files.length) {
     setStatus($("video-status"), "Choose a video file first.", "err");
     return;
   }
+  const file = fileInput.files[0];
   const form = new FormData();
-  form.append("file", fileInput.files[0]);
-  setStatus($("video-status"), "Uploading and validating video...", "");
-  try {
-    const data = await api("/api/video/upload", { method: "POST", body: form });
-    onVideoReady(data, "Uploaded");
-  } catch (e) {
-    setStatus($("video-status"), `Upload failed: ${e.message}`, "err");
-  }
+  form.append("file", file);
+
+  setStatus($("video-status"), "", "");
+  showVideoProgress("Uploading...");
+
+  const xhr = new XMLHttpRequest();
+  xhr.open("POST", "/api/video/upload");
+
+  // Real byte-level upload progress from the browser -- not simulated.
+  xhr.upload.addEventListener("progress", (ev) => {
+    if (ev.lengthComputable) {
+      setVideoProgressPct((ev.loaded / ev.total) * 100);
+    } else {
+      setVideoProgressPct(null);
+    }
+  });
+
+  xhr.addEventListener("load", () => {
+    hideVideoProgress();
+    let data = {};
+    try {
+      data = JSON.parse(xhr.responseText);
+    } catch (e) {
+      /* fall through to status check below */
+    }
+    if (xhr.status >= 200 && xhr.status < 300) {
+      onVideoReady(data, "Uploaded");
+    } else {
+      setStatus($("video-status"), `Upload failed: ${data.message || xhr.statusText}`, "err");
+    }
+  });
+
+  xhr.addEventListener("error", () => {
+    hideVideoProgress();
+    setStatus($("video-status"), "Upload failed: network error.", "err");
+  });
+
+  xhr.send(form);
 });
 
 $("fetch-url-btn").addEventListener("click", async () => {
@@ -93,18 +147,56 @@ $("fetch-url-btn").addEventListener("click", async () => {
     setStatus($("video-status"), "Paste a video URL first.", "err");
     return;
   }
-  setStatus($("video-status"), "Downloading and validating video from URL...", "");
+
+  setStatus($("video-status"), "", "");
+  showVideoProgress("Starting download...");
+
   try {
-    const data = await api("/api/video/ingest-url", {
+    const started = await api("/api/video/ingest-url", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ url }),
     });
-    onVideoReady(data, `Fetched (${data.source_type})`);
+    pollIngestProgress(started.ingest_id);
   } catch (e) {
+    hideVideoProgress();
     setStatus($("video-status"), `URL ingestion failed: ${e.message}`, "err");
   }
 });
+
+function pollIngestProgress(ingestId) {
+  const tick = async () => {
+    let state_;
+    try {
+      state_ = await api(`/api/video/ingest-url/${ingestId}`);
+    } catch (e) {
+      hideVideoProgress();
+      setStatus($("video-status"), `URL ingestion failed: ${e.message}`, "err");
+      return;
+    }
+
+    if (state_.status === "downloading") {
+      $("video-progress-label").textContent = "Downloading...";
+      if (state_.progress_pct !== null && state_.progress_pct !== undefined) {
+        setVideoProgressPct(state_.progress_pct);
+      } else {
+        const mb = (state_.downloaded_bytes / (1024 * 1024)).toFixed(1);
+        setVideoProgressPct(null);
+        $("video-progress-pct").textContent = `${mb} MB`;
+      }
+      setTimeout(tick, 700);
+      return;
+    }
+
+    hideVideoProgress();
+    if (state_.status === "completed") {
+      onVideoReady(state_, `Fetched (${state_.source_type})`);
+    } else {
+      setStatus($("video-status"), `URL ingestion failed: ${state_.error?.message || "unknown error"}`, "err");
+    }
+  };
+  tick();
+}
 
 // --- Step 2: JSON validation ---------------------------------------------
 $("load-sample-btn").addEventListener("click", () => {

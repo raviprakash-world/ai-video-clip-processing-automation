@@ -61,16 +61,34 @@ def check_storage_quota(incoming_bytes: int) -> None:
         )
 
 
-def cleanup_old_jobs(max_age_hours: int) -> list[str]:
-    """Delete job directories older than max_age_hours. Returns removed job_ids. No-op if max_age_hours <= 0."""
-    if max_age_hours <= 0:
+def _cleanup_old_dirs(root: Path, max_age_hours: float, *, protected_ids: frozenset[str] = frozenset()) -> list[str]:
+    if max_age_hours <= 0 or not root.exists():
         return []
     cutoff = time.time() - max_age_hours * 3600
     removed: list[str] = []
-    for entry in settings.JOBS_DIR.iterdir():
-        if not entry.is_dir():
+    for entry in root.iterdir():
+        if not entry.is_dir() or entry.name in protected_ids:
             continue
-        if entry.stat().st_mtime < cutoff:
+        try:
+            is_stale = entry.stat().st_mtime < cutoff
+        except OSError:
+            continue
+        if is_stale:
             shutil.rmtree(entry, ignore_errors=True)
             removed.append(entry.name)
     return removed
+
+
+def cleanup_old_jobs(max_age_hours: float, *, protected_ids: frozenset[str] = frozenset()) -> list[str]:
+    """Delete job directories older than max_age_hours. Returns removed job_ids.
+
+    No-op if max_age_hours <= 0. `protected_ids` (e.g. jobs with a still-running
+    processing task) are never removed regardless of their directory's age --
+    never pull storage out from under a job that's actively writing to it.
+    """
+    return _cleanup_old_dirs(settings.JOBS_DIR, max_age_hours, protected_ids=protected_ids)
+
+
+def cleanup_old_uploads(max_age_hours: float, *, protected_ids: frozenset[str] = frozenset()) -> list[str]:
+    """Delete upload directories (raw source videos) older than max_age_hours."""
+    return _cleanup_old_dirs(settings.UPLOADS_DIR, max_age_hours, protected_ids=protected_ids)

@@ -63,6 +63,27 @@ async def test_direct_url_download_success(file_server, tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_direct_url_download_reports_real_progress(file_server, tmp_path):
+    calls: list[tuple[int, int]] = []
+
+    def on_progress(downloaded, total):
+        calls.append((downloaded, total))
+
+    with patch("app.video_ingestion.remote_source.ensure_public_host", return_value=None):
+        source = DirectUrlSource(f"{file_server}/video.mp4")
+        await source.obtain(tmp_path / "job", on_progress=on_progress)
+
+    assert calls, "on_progress must be called at least once for a real download"
+    total_bytes = calls[0][1]
+    assert total_bytes and total_bytes > 0, "content-length was known for this local file server"
+    # every call reports the same known total, and bytes-downloaded is non-decreasing
+    assert all(total == total_bytes for _, total in calls)
+    downloaded_values = [d for d, _ in calls]
+    assert downloaded_values == sorted(downloaded_values)
+    assert downloaded_values[-1] == total_bytes
+
+
+@pytest.mark.asyncio
 async def test_direct_url_404_rejected(file_server, tmp_path):
     with patch("app.video_ingestion.remote_source.ensure_public_host", return_value=None):
         source = DirectUrlSource(f"{file_server}/does-not-exist.mp4")
