@@ -24,7 +24,7 @@ from app.publishing.token_crypto import decrypt_token, encrypt_token
 
 logger = logging.getLogger("clip_pipeline.publishing")
 
-GRAPH_API_BASE = "https://graph.facebook.com/v21.0"
+GRAPH_API_BASE = "https://graph.facebook.com/v26.0"  # bump periodically; Meta retires versions ~2 years after release
 
 # Meta error codes worth distinguishing (see Meta's Graph API error reference).
 _AUTH_CODES = {190}  # OAuthException: invalid/expired/revoked token

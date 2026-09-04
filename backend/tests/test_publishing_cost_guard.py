@@ -20,6 +20,12 @@ def _account(platform: str, **extra_kwargs) -> SocialAccount:
     )
 
 
+def _configure_meta(monkeypatch, *, config_id="cfg123"):
+    monkeypatch.setattr(settings, "META_APP_ID", "id")
+    monkeypatch.setattr(settings, "META_APP_SECRET", "secret")
+    monkeypatch.setattr(settings, "META_LOGIN_CONFIG_ID", config_id)
+
+
 def test_youtube_not_available_without_oauth_client(monkeypatch):
     monkeypatch.setattr(settings, "GOOGLE_OAUTH_CLIENT_ID", "")
     monkeypatch.setattr(settings, "GOOGLE_OAUTH_CLIENT_SECRET", "")
@@ -43,30 +49,44 @@ def test_youtube_available_with_connected_account(monkeypatch):
     assert report.requires_paid_service is False
 
 
-def test_facebook_check_required_without_page(monkeypatch):
+def test_facebook_not_available_without_login_config_id(monkeypatch):
     monkeypatch.setattr(settings, "META_APP_ID", "id")
     monkeypatch.setattr(settings, "META_APP_SECRET", "secret")
+    monkeypatch.setattr(settings, "META_LOGIN_CONFIG_ID", "")
+    report = facebook_capability(_account("facebook", page_id="123"))
+    assert report.status == CapabilityStatus.NOT_AVAILABLE
+    assert "config" in report.notes[0].lower()
+
+
+def test_facebook_check_required_without_page(monkeypatch):
+    _configure_meta(monkeypatch)
     report = facebook_capability(_account("facebook"))
     assert report.status == CapabilityStatus.CHECK_REQUIRED
 
 
 def test_facebook_available_with_page(monkeypatch):
-    monkeypatch.setattr(settings, "META_APP_ID", "id")
-    monkeypatch.setattr(settings, "META_APP_SECRET", "secret")
+    _configure_meta(monkeypatch)
     report = facebook_capability(_account("facebook", page_id="123"))
     assert report.status == CapabilityStatus.AVAILABLE
 
 
-def test_instagram_check_required_without_business_account(monkeypatch):
+def test_instagram_not_available_without_login_config_id(monkeypatch):
     monkeypatch.setattr(settings, "META_APP_ID", "id")
     monkeypatch.setattr(settings, "META_APP_SECRET", "secret")
+    monkeypatch.setattr(settings, "META_LOGIN_CONFIG_ID", "")
+    report = instagram_capability(_account("instagram", page_id="123", ig_business_account_id="ig1"))
+    assert report.status == CapabilityStatus.NOT_AVAILABLE
+    assert "config" in report.notes[0].lower()
+
+
+def test_instagram_check_required_without_business_account(monkeypatch):
+    _configure_meta(monkeypatch)
     report = instagram_capability(_account("instagram", page_id="123"))
     assert report.status == CapabilityStatus.CHECK_REQUIRED
 
 
 def test_instagram_not_available_without_public_base_url(monkeypatch):
-    monkeypatch.setattr(settings, "META_APP_ID", "id")
-    monkeypatch.setattr(settings, "META_APP_SECRET", "secret")
+    _configure_meta(monkeypatch)
     monkeypatch.setattr(settings, "PUBLIC_BASE_URL", "")
     report = instagram_capability(_account("instagram", page_id="123", ig_business_account_id="ig1"))
     assert report.status == CapabilityStatus.NOT_AVAILABLE
@@ -74,8 +94,7 @@ def test_instagram_not_available_without_public_base_url(monkeypatch):
 
 
 def test_instagram_available_with_public_base_url(monkeypatch):
-    monkeypatch.setattr(settings, "META_APP_ID", "id")
-    monkeypatch.setattr(settings, "META_APP_SECRET", "secret")
+    _configure_meta(monkeypatch)
     monkeypatch.setattr(settings, "PUBLIC_BASE_URL", "https://example.com")
     report = instagram_capability(_account("instagram", page_id="123", ig_business_account_id="ig1"))
     assert report.status == CapabilityStatus.AVAILABLE
@@ -84,8 +103,7 @@ def test_instagram_available_with_public_base_url(monkeypatch):
 def test_no_platform_ever_reports_requiring_a_paid_service(monkeypatch):
     monkeypatch.setattr(settings, "GOOGLE_OAUTH_CLIENT_ID", "id")
     monkeypatch.setattr(settings, "GOOGLE_OAUTH_CLIENT_SECRET", "secret")
-    monkeypatch.setattr(settings, "META_APP_ID", "id")
-    monkeypatch.setattr(settings, "META_APP_SECRET", "secret")
+    _configure_meta(monkeypatch)
     monkeypatch.setattr(settings, "PUBLIC_BASE_URL", "https://example.com")
     for report in (
         youtube_capability(_account("youtube")),

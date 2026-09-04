@@ -171,14 +171,37 @@ ready" to "actually posting":
    GOOGLE_OAUTH_CLIENT_ID=...
    GOOGLE_OAUTH_CLIENT_SECRET=...
    ```
-2. **Facebook + Instagram**: at developers.facebook.com, create an App with
-   the Facebook Login product, and request the
-   `pages_show_list, pages_read_engagement, pages_manage_posts,
-   instagram_basic, instagram_content_publish, business_management`
-   permissions. Set:
+2. **Facebook + Instagram**: Meta has moved to a "use case" based app
+   creation flow, and business permissions like `pages_manage_posts` /
+   `instagram_content_publish` now go through a **Login Configuration**
+   rather than a plain scope list. As of writing (verified against Meta's
+   own current docs — this is exactly the part most likely to have moved
+   again by the time you read this):
+   1. Go to **developers.facebook.com → My Apps → Create App**.
+   2. **App details**: name it, give a contact email, Next.
+   3. **Use cases**: select **"Manage everything on your Page"** *and*
+      **"Manage messaging & content on Instagram"** (both selectable
+      together), Next.
+   4. **Business**: pick "I don't want to connect a business portfolio yet"
+      to start (fine for testing with your own accounts), Next through
+      Requirements and Overview, then **Go to dashboard**.
+   5. In the dashboard, open the **Facebook Login for Business** product
+      (added automatically by those use cases) → **Configurations** → **+
+      Create configuration**.
+      - Access token type: **User access token**.
+      - Assets: select the Facebook Page (and its linked Instagram account,
+        if you've already linked one) you want to publish to.
+      - Permissions: `pages_show_list`, `pages_read_engagement`,
+        `pages_manage_posts`, `business_management`, `instagram_basic`,
+        `instagram_content_publish`.
+      - Click **Create** — you get a **Configuration ID**.
+   6. Under **App Settings → Basic**, copy the **App ID** and **App
+      Secret**, and add the redirect URI from `.env.example` under the
+      Facebook Login for Business product's client OAuth settings.
    ```
    META_APP_ID=...
    META_APP_SECRET=...
+   META_LOGIN_CONFIG_ID=...   # from step 5 above -- required, not optional
    ```
    Instagram publishing additionally requires the connected Page to have a
    linked Instagram **Business or Creator** account, *and* a real public

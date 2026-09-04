@@ -1,6 +1,15 @@
 """
-Meta OAuth (Facebook Login), covering both Facebook Page publishing and
-Instagram Content Publishing (section 11/13/14/30).
+Meta OAuth via Facebook Login for Business, covering both Facebook Page
+publishing and Instagram Content Publishing (section 11/13/14/30).
+
+Meta retired the plain scope-based consent dialog for business permissions
+(pages_manage_posts, instagram_content_publish, etc.) in favor of Login
+Configurations: you create a named configuration in the App Dashboard
+(Facebook Login for Business -> Configurations -> + Create configuration,
+"User access token" type, with the assets/permissions this app needs) and
+get back a config_id, which replaces `scope` in the authorization URL. See
+README.md for the exact current dashboard steps -- Meta's app-creation flow
+changes fairly often and this is the part most likely to drift.
 
 One consent flow covers both platforms: Instagram Business/Creator accounts
 are only reachable through the Graph API via their linked Facebook Page's
@@ -29,7 +38,11 @@ from app.publishing.meta_base import GRAPH_API_BASE, graph_request
 from app.publishing.token_crypto import encrypt_token
 
 _OAUTH_STATE_TTL_MINUTES = 15
-_SCOPES = "pages_show_list,pages_read_engagement,pages_manage_posts,instagram_basic,instagram_content_publish,business_management"
+# Fallback only -- Meta recommends against scope= once a Login Configuration
+# exists, but an app that genuinely has no config_id yet (e.g. mid-setup)
+# still gets a URL that Meta will render an explicit error page for, rather
+# than this code guessing or silently degrading permissions.
+_LEGACY_SCOPES = "pages_show_list,pages_read_engagement,pages_manage_posts,instagram_basic,instagram_content_publish,business_management"
 
 
 async def build_authorization_url() -> str:
@@ -41,10 +54,13 @@ async def build_authorization_url() -> str:
         "client_id": settings.META_APP_ID,
         "redirect_uri": settings.META_OAUTH_REDIRECT_URI,
         "state": state,
-        "scope": _SCOPES,
         "response_type": "code",
     }
-    return f"https://www.facebook.com/v21.0/dialog/oauth?{urlencode(params)}"
+    if settings.META_LOGIN_CONFIG_ID:
+        params["config_id"] = settings.META_LOGIN_CONFIG_ID
+    else:
+        params["scope"] = _LEGACY_SCOPES
+    return f"{GRAPH_API_BASE.replace('graph.facebook.com', 'www.facebook.com')}/dialog/oauth?{urlencode(params)}"
 
 
 async def _consume_state(state: str) -> bool:

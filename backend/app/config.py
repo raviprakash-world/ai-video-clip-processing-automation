@@ -90,14 +90,22 @@ class Settings:
         "GOOGLE_OAUTH_REDIRECT_URI", "http://localhost:8077/api/publishing/youtube/callback"
     )
 
-    # Meta OAuth (Facebook Login, used for both Facebook Page publishing and
-    # Instagram Content Publishing via a linked Page). Create at
-    # developers.facebook.com -> your App -> Facebook Login product.
+    # Meta OAuth (Facebook Login for Business, used for both Facebook Page
+    # publishing and Instagram Content Publishing via a linked Page). Create at
+    # developers.facebook.com -> your App -> Facebook Login for Business product.
     META_APP_ID: str = os.environ.get("META_APP_ID", "")
     META_APP_SECRET: str = os.environ.get("META_APP_SECRET", "")
     META_OAUTH_REDIRECT_URI: str = os.environ.get(
         "META_OAUTH_REDIRECT_URI", "http://localhost:8077/api/publishing/meta/callback"
     )
+    # Meta's current app-creation flow (use cases + "Facebook Login for Business")
+    # requires a Login Configuration ID rather than a plain OAuth `scope` list --
+    # create one under the app's Facebook Login for Business -> Configurations
+    # page (User access token type) and paste its ID here. Without it, the
+    # authorization dialog falls back to a classic scope= URL, which Meta no
+    # longer reliably honors for pages_manage_posts/instagram_content_publish on
+    # apps created through the newer flow.
+    META_LOGIN_CONFIG_ID: str = os.environ.get("META_LOGIN_CONFIG_ID", "")
 
     # Instagram's Content Publishing API requires a publicly-fetchable video_url
     # (Meta's servers pull the file themselves) -- there is no direct-binary-upload

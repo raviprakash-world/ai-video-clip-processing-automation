@@ -67,6 +67,14 @@ def facebook_capability(account: SocialAccount | None) -> CapabilityReport:
             "facebook", True, False, CapabilityStatus.NOT_AVAILABLE,
             ["META_APP_ID / META_APP_SECRET are not configured on the server."],
         )
+    if not settings.META_LOGIN_CONFIG_ID:
+        return CapabilityReport(
+            "facebook", True, False, CapabilityStatus.NOT_AVAILABLE,
+            [
+                "META_LOGIN_CONFIG_ID is not configured -- create a Facebook Login for "
+                "Business configuration (User access token type) in the App Dashboard first."
+            ],
+        )
     if not account or account.status != "CONNECTED":
         return CapabilityReport("facebook", True, False, CapabilityStatus.NOT_AVAILABLE, ["No connected Facebook Page."])
     if not account.extra.get("page_id"):
@@ -85,6 +93,14 @@ def instagram_capability(account: SocialAccount | None) -> CapabilityReport:
         return CapabilityReport(
             "instagram", True, False, CapabilityStatus.NOT_AVAILABLE,
             ["META_APP_ID / META_APP_SECRET are not configured on the server."],
+        )
+    if not settings.META_LOGIN_CONFIG_ID:
+        return CapabilityReport(
+            "instagram", True, False, CapabilityStatus.NOT_AVAILABLE,
+            [
+                "META_LOGIN_CONFIG_ID is not configured -- create a Facebook Login for "
+                "Business configuration (User access token type) in the App Dashboard first."
+            ],
         )
     if not account or account.status != "CONNECTED":
         return CapabilityReport("instagram", True, False, CapabilityStatus.NOT_AVAILABLE, ["No connected Instagram account."])
