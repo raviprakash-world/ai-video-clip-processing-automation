@@ -17,4 +17,5 @@ google-auth==2.35.0
 google-auth-oauthlib==1.2.1
 google-api-python-client==2.149.0
 respx==0.21.1
+python-dotenv==1.0.1
 

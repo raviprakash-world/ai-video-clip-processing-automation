@@ -4,6 +4,12 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+from dotenv import load_dotenv
+
+# Loads backend/.env if present (gitignored -- see .env.example for the template).
+# Real environment variables always win over anything in the file.
+load_dotenv(Path(__file__).resolve().parent.parent / ".env", override=False)
+
 
 def _int(name: str, default: int) -> int:
     val = os.environ.get(name)
