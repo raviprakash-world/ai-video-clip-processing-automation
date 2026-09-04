@@ -53,6 +53,53 @@ class Settings:
     ALLOWED_UPLOAD_EXTENSIONS = {".mp4", ".mov", ".webm", ".mkv", ".m4v"}
     SUPPORTED_SCHEMA_VERSIONS = ("1.0",)
 
+    # -- Publishing queue -------------------------------------------------------
+    DATABASE_PATH: Path = STORAGE_ROOT / "app.db"
+    DATABASE_URL: str = os.environ.get("DATABASE_URL", "") or f"sqlite+aiosqlite:///{DATABASE_PATH}"
+
+    PUBLISH_INTERVAL_MINUTES: int = _int("PUBLISH_INTERVAL_MINUTES", 60)
+    MAX_CONCURRENT_PUBLISHES: int = _int("MAX_CONCURRENT_PUBLISHES", 1)  # section 36: deliberately conservative
+    PUBLISHING_WORKER_POLL_SECONDS: int = _int("PUBLISHING_WORKER_POLL_SECONDS", 30)
+    MAX_PUBLISH_ATTEMPTS: int = _int("MAX_PUBLISH_ATTEMPTS", 3)
+    # Delay before each attempt (index 0 = first attempt, no delay). Section 19.
+    RETRY_DELAYS_MINUTES: tuple[int, ...] = (0, 5, 30)
+    DEFAULT_QUOTA_WAIT_MINUTES: int = _int("DEFAULT_QUOTA_WAIT_MINUTES", 60)
+
+    # Section 39: a clip carrying a meaningful copyright_warning is blocked from
+    # auto-publishing by default. This is a safety policy, not a legal opinion --
+    # operators who understand their own rights situation can disable it.
+    BLOCK_WARNINGS: bool = os.environ.get("BLOCK_WARNINGS", "true").lower() not in ("false", "0", "")
+
+    # Fernet key for encrypting OAuth tokens at rest. MUST be set via env in any
+    # real deployment -- an ephemeral key generated at import time means tokens
+    # become undecryptable the moment the process restarts. See app.publishing.token_crypto.
+    TOKEN_ENCRYPTION_KEY: str = os.environ.get("TOKEN_ENCRYPTION_KEY", "")
+
+    # Google OAuth (YouTube Data API v3). Create these in Google Cloud Console:
+    # APIs & Services -> Credentials -> OAuth client ID (Web application), with
+    # the YouTube Data API v3 enabled on the project.
+    GOOGLE_OAUTH_CLIENT_ID: str = os.environ.get("GOOGLE_OAUTH_CLIENT_ID", "")
+    GOOGLE_OAUTH_CLIENT_SECRET: str = os.environ.get("GOOGLE_OAUTH_CLIENT_SECRET", "")
+    GOOGLE_OAUTH_REDIRECT_URI: str = os.environ.get(
+        "GOOGLE_OAUTH_REDIRECT_URI", "http://localhost:8077/api/publishing/youtube/callback"
+    )
+
+    # Meta OAuth (Facebook Login, used for both Facebook Page publishing and
+    # Instagram Content Publishing via a linked Page). Create at
+    # developers.facebook.com -> your App -> Facebook Login product.
+    META_APP_ID: str = os.environ.get("META_APP_ID", "")
+    META_APP_SECRET: str = os.environ.get("META_APP_SECRET", "")
+    META_OAUTH_REDIRECT_URI: str = os.environ.get(
+        "META_OAUTH_REDIRECT_URI", "http://localhost:8077/api/publishing/meta/callback"
+    )
+
+    # Instagram's Content Publishing API requires a publicly-fetchable video_url
+    # (Meta's servers pull the file themselves) -- there is no direct-binary-upload
+    # option for Reels. Set this to your server's real public HTTPS origin to
+    # enable Instagram; leave empty to keep it reported as NOT_AVAILABLE. Facebook
+    # Page video publishing does NOT need this (it accepts direct binary upload).
+    PUBLIC_BASE_URL: str = os.environ.get("PUBLIC_BASE_URL", "")
+
 
 settings = Settings()
 settings.UPLOADS_DIR.mkdir(parents=True, exist_ok=True)

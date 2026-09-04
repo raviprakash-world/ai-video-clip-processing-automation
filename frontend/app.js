@@ -7,6 +7,8 @@ const state = {
   overlayAssetId: null,
   jobId: null,
   pollHandle: null,
+  publishJobId: null,
+  publishPollHandle: null,
 };
 
 const SAMPLE_JSON = {
@@ -286,6 +288,21 @@ async function maybeUploadOverlay() {
 }
 
 // --- Step 4b: generate -----------------------------------------------------
+async function buildProcessingConfig() {
+  const watermarkMode = document.querySelector('input[name="watermark"]:checked').value;
+  const overlayAssetId = await maybeUploadOverlay();
+  return {
+    output_width: parseInt($("cfg-width").value, 10),
+    output_height: parseInt($("cfg-height").value, 10),
+    crop_strategy: document.querySelector('input[name="crop"]:checked').value,
+    watermark: {
+      mode: watermarkMode,
+      authorized: watermarkMode !== "none" ? true : false,
+      overlay_asset_id: overlayAssetId,
+    },
+  };
+}
+
 $("generate-btn").addEventListener("click", async () => {
   if (!state.selected.size) {
     setStatus($("config-status"), "Select at least one clip.", "err");
@@ -293,19 +310,7 @@ $("generate-btn").addEventListener("click", async () => {
   }
   setStatus($("config-status"), "Preparing job...", "");
   try {
-    const watermarkMode = document.querySelector('input[name="watermark"]:checked').value;
-    const overlayAssetId = await maybeUploadOverlay();
-
-    const config = {
-      output_width: parseInt($("cfg-width").value, 10),
-      output_height: parseInt($("cfg-height").value, 10),
-      crop_strategy: document.querySelector('input[name="crop"]:checked').value,
-      watermark: {
-        mode: watermarkMode,
-        authorized: watermarkMode !== "none" ? true : false,
-        overlay_asset_id: overlayAssetId,
-      },
-    };
+    const config = await buildProcessingConfig();
 
     const job = await api("/api/jobs", {
       method: "POST",
@@ -325,6 +330,169 @@ $("generate-btn").addEventListener("click", async () => {
     setStatus($("config-status"), `Could not start job: ${e.message}`, "err");
   }
 });
+
+// --- Auto-Publish: Generate + Queue (section 24) ----------------------------
+$("generate-queue-btn").addEventListener("click", async () => {
+  const platforms = Array.from(document.querySelectorAll('input[name="publish-platform"]:checked')).map((el) => el.value);
+  if (!platforms.length) {
+    setStatus($("queue-generate-status"), "Select at least one platform to auto-publish to.", "err");
+    return;
+  }
+  if (!state.parsedJson) {
+    setStatus($("queue-generate-status"), "Validate the AI JSON in Step 2 first.", "err");
+    return;
+  }
+  setStatus($("queue-generate-status"), "Generating clips and building the publish queue...", "");
+  try {
+    const config = await buildProcessingConfig();
+    const interval_minutes = parseInt($("publish-interval").value, 10) || 60;
+
+    const result = await api("/api/publishing/queue/generate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ upload_id: state.uploadId, json_data: state.parsedJson, config, platforms, interval_minutes }),
+    });
+
+    state.publishJobId = result.job_id;
+    let msg = `Job ${result.job_id} started -- clips will be queued for ${platforms.join(", ")} once generated.`;
+    if (result.skipped_clips && result.skipped_clips.length) {
+      msg += ` (${result.skipped_clips.length} clip(s) skipped: out of range.)`;
+    }
+    setStatus($("queue-generate-status"), msg, "ok");
+    $("step-dashboard").hidden = false;
+    startDashboardPolling();
+  } catch (e) {
+    setStatus($("queue-generate-status"), `Could not start: ${e.message}`, "err");
+  }
+});
+
+function startDashboardPolling() {
+  if (state.publishPollHandle) clearInterval(state.publishPollHandle);
+  state.publishPollHandle = setInterval(pollDashboard, 4000);
+  pollDashboard();
+}
+
+async function pollDashboard() {
+  if (!state.publishJobId) return;
+  try {
+    const items = await api(`/api/publishing/queue?job_id=${state.publishJobId}`);
+    renderDashboard(items);
+  } catch (e) {
+    // transient poll failure -- try again next tick
+  }
+}
+
+function formatCountdown(scheduledAtIso) {
+  const diffMs = new Date(scheduledAtIso).getTime() - Date.now();
+  if (diffMs <= 0) return "due now";
+  const minutes = Math.round(diffMs / 60000);
+  if (minutes < 60) return `in ${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  return `in ${hours}h ${minutes % 60}m`;
+}
+
+function renderDashboard(items) {
+  const upcoming = items
+    .filter((i) => ["WAITING", "RETRYING", "QUOTA_WAIT"].includes(i.status))
+    .sort((a, b) => new Date(a.scheduled_at) - new Date(b.scheduled_at));
+
+  const nextEl = $("dashboard-next");
+  if (upcoming.length) {
+    const next = upcoming[0];
+    nextEl.innerHTML = `<strong>Next:</strong> ${next.clip_id} &rarr; ${next.platform} ${formatCountdown(next.scheduled_at)} (${new Date(next.scheduled_at).toLocaleString()})`;
+  } else {
+    nextEl.textContent = items.length ? "No more clips waiting to publish." : "No queued items yet.";
+  }
+
+  const tbody = $("queue-table-body");
+  tbody.innerHTML = "";
+  const sorted = [...items].sort((a, b) => new Date(a.scheduled_at) - new Date(b.scheduled_at));
+  for (const item of sorted) {
+    const tr = document.createElement("tr");
+    const canRetry = ["FAILED", "AUTH_REQUIRED", "NOT_SUPPORTED", "QUOTA_WAIT", "CANCELLED"].includes(item.status);
+    const canSkipOrCancel = ["WAITING", "RETRYING", "PAUSED", "QUOTA_WAIT"].includes(item.status);
+    const canPublishNow = ["WAITING", "PAUSED"].includes(item.status);
+
+    tr.innerHTML = `
+      <td>${item.clip_id}${item.title ? `<div class="clip-meta">${item.title}</div>` : ""}</td>
+      <td>${item.platform}</td>
+      <td><span class="status-pill ${item.status}">${item.status}</span></td>
+      <td>${new Date(item.scheduled_at).toLocaleString()}</td>
+      <td>${item.attempt_count}</td>
+      <td class="error-cell">${item.last_error || (item.external_post_id ? `id: ${item.external_post_id}` : "")}</td>
+      <td class="row-actions">
+        ${canRetry ? `<button class="secondary" data-action="retry" data-id="${item.id}">Retry</button>` : ""}
+        ${canSkipOrCancel ? `<button class="secondary" data-action="skip" data-id="${item.id}">Skip</button>` : ""}
+        ${canPublishNow ? `<button class="secondary" data-action="publish-now" data-id="${item.id}">Publish Now</button>` : ""}
+      </td>
+    `;
+    tbody.appendChild(tr);
+  }
+
+  tbody.querySelectorAll("button[data-action]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const action = btn.getAttribute("data-action");
+      const id = btn.getAttribute("data-id");
+      try {
+        await api(`/api/publishing/queue/${id}/${action}`, { method: "POST" });
+        pollDashboard();
+      } catch (e) {
+        alert(`Action failed: ${e.message}`);
+      }
+    });
+  });
+}
+
+$("pause-queue-btn").addEventListener("click", async () => {
+  if (!state.publishJobId) return;
+  await api(`/api/publishing/queue/job/${state.publishJobId}/pause`, { method: "POST" });
+  pollDashboard();
+});
+
+$("resume-queue-btn").addEventListener("click", async () => {
+  if (!state.publishJobId) return;
+  await api(`/api/publishing/queue/job/${state.publishJobId}/resume`, { method: "POST" });
+  pollDashboard();
+});
+
+// --- Connected Accounts ------------------------------------------------------
+async function loadAccountsAndCapabilities() {
+  try {
+    const [capabilities, accounts] = await Promise.all([
+      api("/api/publishing/capabilities"),
+      api("/api/publishing/accounts"),
+    ]);
+    const container = $("accounts-list");
+    container.innerHTML = "";
+    for (const cap of capabilities) {
+      const account = accounts.find((a) => a.platform === cap.platform);
+      const row = document.createElement("div");
+      row.className = "account-row";
+      row.innerHTML = `
+        <span class="platform-name">${cap.platform}</span>
+        <span>${account ? account.account_name || account.account_id : "not connected"}</span>
+        <span class="status-pill ${cap.status}">${cap.status.replace("_", " ")}</span>
+      `;
+      row.title = cap.notes.join(" ");
+      container.appendChild(row);
+    }
+  } catch (e) {
+    $("accounts-list").textContent = "Could not load account status.";
+  }
+}
+
+function showOAuthRedirectStatus() {
+  const params = new URLSearchParams(window.location.search);
+  const oauth = params.get("oauth");
+  const message = params.get("message");
+  if (oauth) {
+    setStatus($("oauth-status"), message || "", oauth === "success" ? "ok" : "err");
+    window.history.replaceState({}, "", window.location.pathname);
+  }
+}
+
+loadAccountsAndCapabilities();
+showOAuthRedirectStatus();
 
 // --- Step 5: progress + results ---------------------------------------------
 function startPolling() {

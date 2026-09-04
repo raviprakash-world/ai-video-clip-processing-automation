@@ -7,6 +7,9 @@ storage/uploads/*
 storage/jobs/*
 !storage/jobs/.gitkeep
 storage/idempotency_index.json
+storage/app.db
+storage/app.db-*
+.env
 .DS_Store
 *.log
 .pytest_cache/

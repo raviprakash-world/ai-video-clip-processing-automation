@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>AI Video Clip Processing Automation</title>
-  <link rel="stylesheet" href="styles.css" />
+  <link rel="stylesheet" href="styles.css?v=2" />
 </head>
 <body>
   <header>
@@ -13,6 +13,16 @@
   </header>
 
   <main>
+    <section class="card" id="accounts-card">
+      <h2>Connected Accounts</h2>
+      <div id="accounts-list" class="accounts-list"></div>
+      <div class="row">
+        <a id="connect-youtube" class="button secondary" href="/api/publishing/connect/youtube">Connect YouTube</a>
+        <a id="connect-meta" class="button secondary" href="/api/publishing/connect/meta">Connect Facebook / Instagram</a>
+      </div>
+      <div id="oauth-status" class="status"></div>
+    </section>
+
     <section class="card" id="step-video">
       <h2>Step 1 &middot; Source Video</h2>
       <div class="row">
@@ -67,6 +77,22 @@
       </div>
       <button id="generate-btn">Generate Clips</button>
       <div id="config-status" class="status"></div>
+
+      <hr class="divider" />
+
+      <h3>Auto-Publish (optional)</h3>
+      <p class="hint">Every valid clip (ordered by rank) is generated and queued automatically -- you don't pick clips one by one for this.</p>
+      <fieldset>
+        <legend>Platforms</legend>
+        <label><input type="checkbox" name="publish-platform" value="youtube" /> YouTube</label>
+        <label><input type="checkbox" name="publish-platform" value="instagram" /> Instagram</label>
+        <label><input type="checkbox" name="publish-platform" value="facebook" /> Facebook</label>
+      </fieldset>
+      <label>Publish interval (minutes) <input type="number" id="publish-interval" value="60" min="1" style="width:100px;" /></label>
+      <div class="row">
+        <button id="generate-queue-btn">Generate + Queue</button>
+      </div>
+      <div id="queue-generate-status" class="status"></div>
     </section>
 
     <section class="card" id="step-results" hidden>
@@ -75,8 +101,25 @@
       <div id="results-list"></div>
       <a id="download-all" class="button secondary" hidden>Download All (.zip)</a>
     </section>
+
+    <section class="card" id="step-dashboard" hidden>
+      <h2>Publishing Dashboard</h2>
+      <div id="dashboard-next" class="dashboard-next"></div>
+      <div class="row">
+        <button id="pause-queue-btn" class="secondary">Pause Queue</button>
+        <button id="resume-queue-btn" class="secondary">Resume Queue</button>
+      </div>
+      <div class="table-scroll">
+        <table id="queue-table">
+          <thead>
+            <tr><th>Clip</th><th>Platform</th><th>Status</th><th>Scheduled</th><th>Attempts</th><th>Error</th><th>Actions</th></tr>
+          </thead>
+          <tbody id="queue-table-body"></tbody>
+        </table>
+      </div>
+    </section>
   </main>
 
-  <script src="app.js"></script>
+  <script src="app.js?v=2"></script>
 </body>
 </html>

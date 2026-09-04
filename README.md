@@ -20,6 +20,8 @@ EXTERNAL AI --JSON--> [validate] -> [ingest] -> [extract] -> [crop] ->
 - **Backend**: Python 3.13 + FastAPI, ffmpeg/ffprobe via `asyncio.create_subprocess_exec`
   (argument lists only — never a shell string).
 - **Frontend**: plain HTML/CSS/JS, no build step, served as static files by FastAPI.
+- **Database**: SQLite (via SQLAlchemy async + aiosqlite) at `storage/app.db`, used
+  only by the publishing queue (see below) — the core clip pipeline stays in-memory.
 
 ## Running it
 
@@ -59,6 +61,12 @@ synthetic source video and runs it through the full extract → crop → encode
 | `app/jobs` | Job/clip state machine, concurrency-limited orchestration, idempotency hashing, retention sweep |
 | `app/storage` | Path-traversal-safe job/upload directories, quota + retention |
 | `app/video_ingestion/ingest_manager.py` | Tracks real download progress for URL/YouTube ingestion so the UI can poll it |
+| `app/db` | SQLAlchemy async models + engine/session (`UTCDateTime` type works around SQLite silently dropping tzinfo on read) |
+| `app/publishing/cost_guard.py` | AVAILABLE / CHECK_REQUIRED / NOT_AVAILABLE per platform — never enables a paid/unsupported path |
+| `app/publishing/provider.py` + `youtube_provider.py` / `facebook_provider.py` / `instagram_provider.py` | `PublishingProvider` ABC + one official-API implementation each |
+| `app/publishing/queue_manager.py` | Scheduling from a completed job, idempotent creation, pause/resume/retry/skip/publish-now |
+| `app/publishing/worker.py` | Atomic claim, retry/backoff classification, pre-publish validation, per-item failure isolation |
+| `app/publishing/oauth` | Google / Meta OAuth authorization-code flows, CSRF state, encrypted token storage |
 | `app/api` | FastAPI routes only — no business logic |
 
 ## Progress reporting
@@ -129,11 +137,129 @@ This repo does not install that crontab entry for you.
     YouTube's player/signature changes, so expect to bump its pinned version in
     `requirements.txt` periodically if downloads start failing.
 
-## Explicitly out of scope for this MVP
+## Auto-publishing queue (YouTube / Instagram / Facebook)
 
-Automatic viral-moment detection, transcription, captions, hashtags,
-titles, hooks, social publishing, scheduling, analytics, billing,
-multi-tenancy. See section 27/28 of the build spec this was written against
-— those land later, behind `ClipDiscoveryProvider` / `CaptionProvider` /
-`PublishingProvider` interfaces this app's JSON-in boundary already models,
-without touching the processing engine.
+On top of the clip pipeline, there's an optional automated publishing queue:
+paste a video + AI JSON, pick platforms and an interval, hit **Generate +
+Queue**, and every valid clip (ordered by `rank`, then `viral_score` desc)
+gets generated and automatically posted one at a time, hours apart, without
+anyone manually queueing individual clips.
+
+**Cost/legality guarantee**: only official APIs are used (YouTube Data API
+v3 via Google's own client library; Meta Graph API via direct HTTPS calls to
+its documented REST endpoints) — no browser automation, no scraping, no
+unofficial posting services, no paid third-party publishing tool (Buffer,
+Hootsuite, etc.), ever. Before any provider is allowed to publish, a cost
+guard (`app/publishing/cost_guard.py`) checks whether it's actually usable —
+missing OAuth app credentials, no connected account, or an ineligible
+account type (Instagram needs a Business/Creator account linked to a
+Facebook Page) all report `NOT_AVAILABLE` / `CHECK_REQUIRED` rather than the
+app attempting to force it through. Check `GET /api/publishing/capabilities`
+or the "Connected Accounts" panel in the UI at any time.
+
+### Setting it up for real
+
+This app cannot create Google Cloud or Meta Developer apps for you — that
+needs your own login and acceptance of their terms. To go from "architecture
+ready" to "actually posting":
+
+1. **YouTube**: in Google Cloud Console, enable the YouTube Data API v3 and
+   create an OAuth client ID (Web application), with
+   `http://localhost:8077/api/publishing/youtube/callback` (or your real
+   deployed URL) as an authorized redirect URI. Set:
+   ```
+   GOOGLE_OAUTH_CLIENT_ID=...
+   GOOGLE_OAUTH_CLIENT_SECRET=...
+   ```
+2. **Facebook + Instagram**: at developers.facebook.com, create an App with
+   the Facebook Login product, and request the
+   `pages_show_list, pages_read_engagement, pages_manage_posts,
+   instagram_basic, instagram_content_publish, business_management`
+   permissions. Set:
+   ```
+   META_APP_ID=...
+   META_APP_SECRET=...
+   ```
+   Instagram publishing additionally requires the connected Page to have a
+   linked Instagram **Business or Creator** account, *and* a real public
+   HTTPS URL for this server (Meta's servers fetch the video themselves —
+   there's no direct-upload option for Reels):
+   ```
+   PUBLIC_BASE_URL=https://your-real-domain.example
+   ```
+   Facebook Page video publishing does not need `PUBLIC_BASE_URL` — it
+   accepts direct binary upload.
+3. **Token encryption**: set a stable key so stored tokens survive a
+   restart (otherwise a random one is generated per-process and logged as a
+   loud warning):
+   ```
+   TOKEN_ENCRYPTION_KEY=$(python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())")
+   ```
+4. Restart the server, click **Connect YouTube** / **Connect Facebook /
+   Instagram** in the UI, and complete the consent screen. The capabilities
+   panel should flip to `AVAILABLE`.
+
+None of this was tested against real YouTube/Instagram/Facebook accounts in
+this session (that requires credentials only you can generate, plus your own
+consent-screen approval) — what's been verified is the full architecture end
+to end with the cost guard correctly reporting `NOT_AVAILABLE` for every
+platform pre-setup, and the queue/scheduler/worker running for real against
+locally-generated clips (rank-based scheduling, retry/backoff, one-platform
+and one-clip failure isolation, pause/resume, idempotent resubmission, and
+restart-safe state), all through the live UI and a comprehensive test suite.
+
+### How it works
+
+```
+GENERATE + QUEUE
+      |
+      v
+[validate JSON] -> [create processing job, all valid clips auto-selected] -> [existing pipeline runs]
+      |
+      v (once every clip resolves)
+[create_queue_from_job: order by rank/score, one time-slot per clip,
+ every enabled platform shares that clip's slot, copyright_warning-flagged
+ clips excluded by default]
+      |
+      v
+publishing_queue (SQLite) <---- PublishingWorker polls every 30s, claims one
+      |                          due row at a time via an atomic
+      v                          UPDATE ... WHERE status=... (restart-safe,
+PublishingProvider                multi-worker-safe), never more than
+ (youtube | instagram | facebook) MAX_CONCURRENT_PUBLISHES=1 at once
+```
+
+- **States**: `WAITING -> PUBLISHING -> PUBLISHED`, or `FAILED` /
+  `RETRYING` (transient errors, backoff 0/5/30 min, max 3 attempts) /
+  `AUTH_REQUIRED` (bad/missing token) / `NOT_SUPPORTED` (account/media
+  ineligible) / `QUOTA_WAIT` (rate-limited, waits out a cooldown) /
+  `PAUSED` / `CANCELLED`. A platform failure never touches other platforms'
+  items for the same clip; a clip failure never blocks the rest of the queue.
+- **Idempotency**: `idempotency_key = job_id:clip_id:platform` is a DB
+  unique constraint — the same clip can never be queued twice for the same
+  platform, and `retry_item()` refuses to revert an already-`PUBLISHED` item
+  back to `WAITING` (the one thing that could otherwise cause a real
+  duplicate repost).
+- **Restart safety**: the whole queue lives in SQLite, not memory — a
+  `PUBLISHED` row stays `PUBLISHED` across a restart, and the worker just
+  resumes finding due rows normally. `app/jobs/manager.py`'s in-memory
+  processing state is unaffected; only already-completed clips ever get
+  queued for publishing in the first place.
+- **Human control**: Pause/Resume (per job), Retry, Skip, Publish Now — all
+  in the dashboard and at `/api/publishing/queue/...`.
+- **Metadata**: title prefers `title_options.curiosity`, falling back to
+  `title_options.direct`, then `hook`; caption/hashtags come only from the
+  JSON, never invented (`app/publishing/metadata.py`).
+- **Safety**: a clip with a non-null `copyright_warning` is excluded from
+  auto-publishing by default (`BLOCK_WARNINGS=true`); this is a policy
+  toggle, not a legal determination.
+
+## Explicitly out of scope
+
+AI-generated captions/hashtags/titles, automatic viral-moment detection or
+clip discovery, social analytics, recommendation algorithms, engagement
+bots, auto-commenting/liking, browser automation or CAPTCHA/restriction
+bypass of any kind, and paid third-party publishing services. The
+publishing queue is deliberately just a queue: it posts exactly what the
+JSON says, to exactly the platforms you enable, on the schedule you set —
+nothing about what or whether to post is inferred.
