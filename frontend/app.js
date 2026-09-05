@@ -9,6 +9,7 @@ const state = {
   pollHandle: null,
   publishJobId: null,
   publishPollHandle: null,
+  knownJobIds: [],
 };
 
 const SAMPLE_JSON = {
@@ -373,14 +374,26 @@ function startDashboardPolling() {
 }
 
 async function pollDashboard() {
-  if (!state.publishJobId) return;
   try {
-    const items = await api(`/api/publishing/queue?job_id=${state.publishJobId}`);
+    // Deliberately unfiltered: the dashboard shows every job's queue, not just
+    // the most recently created one -- starting a new job must never make an
+    // older, still-actively-publishing queue disappear from view (it keeps
+    // publishing in the background regardless of what's on screen; this was a
+    // real bug where the UI looked like it had "cleared" a previous queue).
+    const items = await api("/api/publishing/queue");
+    state.knownJobIds = [...new Set(items.map((i) => i.job_id))];
+    if (items.length) $("step-dashboard").hidden = false;
     renderDashboard(items);
   } catch (e) {
     // transient poll failure -- try again next tick
   }
 }
+
+// The queue is persisted server-side, so it can already be non-empty on a
+// fresh page load (a prior session's jobs, or after a server restart) --
+// start polling immediately rather than waiting for a "Generate + Queue"
+// click in this particular page session.
+startDashboardPolling();
 
 function formatCountdown(scheduledAtIso) {
   const diffMs = new Date(scheduledAtIso).getTime() - Date.now();
@@ -414,7 +427,7 @@ function renderDashboard(items) {
     const canPublishNow = ["WAITING", "PAUSED"].includes(item.status);
 
     tr.innerHTML = `
-      <td>${item.clip_id}${item.title ? `<div class="clip-meta">${item.title}</div>` : ""}</td>
+      <td>${item.clip_id}<div class="clip-meta">job ${item.job_id.slice(0, 8)}${item.title ? ` &middot; ${item.title}` : ""}</div></td>
       <td>${item.platform}</td>
       <td><span class="status-pill ${item.status}">${item.status}</span></td>
       <td>${new Date(item.scheduled_at).toLocaleString()}</td>
@@ -443,15 +456,19 @@ function renderDashboard(items) {
   });
 }
 
+// Pause/Resume act on every job currently shown on the dashboard, not just the
+// most recently started one -- same reasoning as the unfiltered poll above.
 $("pause-queue-btn").addEventListener("click", async () => {
-  if (!state.publishJobId) return;
-  await api(`/api/publishing/queue/job/${state.publishJobId}/pause`, { method: "POST" });
+  for (const jobId of state.knownJobIds || []) {
+    await api(`/api/publishing/queue/job/${jobId}/pause`, { method: "POST" });
+  }
   pollDashboard();
 });
 
 $("resume-queue-btn").addEventListener("click", async () => {
-  if (!state.publishJobId) return;
-  await api(`/api/publishing/queue/job/${state.publishJobId}/resume`, { method: "POST" });
+  for (const jobId of state.knownJobIds || []) {
+    await api(`/api/publishing/queue/job/${jobId}/resume`, { method: "POST" });
+  }
   pollDashboard();
 });
 
