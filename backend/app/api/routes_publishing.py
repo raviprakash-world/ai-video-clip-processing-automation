@@ -24,6 +24,7 @@ link/window.location navigation, not an API call the frontend parses.
 from __future__ import annotations
 
 import asyncio
+import logging
 from typing import Any, Optional
 from urllib.parse import quote
 
@@ -44,11 +45,28 @@ from app.publishing.auto_queue import watch_job_and_enqueue
 from app.publishing.cost_guard import full_capability_report
 from app.publishing.oauth import meta_oauth, youtube_oauth
 from app.publishing.registry import PLATFORMS
+from app.publishing.states import PublishError
 from app.schemas.processing_config import ProcessingConfig
 from app.storage.paths import find_upload_source
 from app.video_metadata.probe import probe_video
 
 router = APIRouter(prefix="/api/publishing", tags=["publishing"])
+logger = logging.getLogger("clip_pipeline.publishing")
+
+
+def _describe_oauth_error(exc: Exception) -> str:
+    """OAuth callbacks must never 500 -- any failure here (invalid/reused code,
+    a Graph or Google API error, a network blip) should become a readable
+    message the user sees in the app, with the full traceback still going to
+    the server log for debugging. PublishError.message and ValueError's own
+    string are already safe to show (they're built from API error responses,
+    never from a token); anything else gets a generic fallback rather than
+    risking an unexpected exception's repr leaking internal detail."""
+    if isinstance(exc, PublishError):
+        return exc.message
+    if isinstance(exc, ValueError):
+        return str(exc)
+    return f"{type(exc).__name__}: {exc}" if str(exc) else type(exc).__name__
 
 
 # -- capabilities / accounts -----------------------------------------------------
@@ -98,8 +116,9 @@ async def youtube_callback(code: str = "", state: str = "", error: str = ""):
         return _oauth_result_redirect(success=False, message=f"YouTube authorization was not completed: {error}")
     try:
         account = await youtube_oauth.handle_callback(code, state)
-    except ValueError as exc:
-        return _oauth_result_redirect(success=False, message=str(exc))
+    except Exception as exc:  # noqa: BLE001 - an OAuth callback must never 500; see _describe_oauth_error
+        logger.exception("YouTube OAuth callback failed")
+        return _oauth_result_redirect(success=False, message=_describe_oauth_error(exc))
     return _oauth_result_redirect(success=True, message=f"Connected YouTube channel '{account.account_name}'.")
 
 
@@ -117,11 +136,15 @@ async def meta_callback(code: str = "", state: str = "", error: str = ""):
     if error:
         return _oauth_result_redirect(success=False, message=f"Meta authorization was not completed: {error}")
     try:
-        accounts = await meta_oauth.handle_callback(code, state)
-    except ValueError as exc:
-        return _oauth_result_redirect(success=False, message=str(exc))
+        accounts, warnings = await meta_oauth.handle_callback(code, state)
+    except Exception as exc:  # noqa: BLE001 - an OAuth callback must never 500; see _describe_oauth_error
+        logger.exception("Meta OAuth callback failed")
+        return _oauth_result_redirect(success=False, message=_describe_oauth_error(exc))
     names = ", ".join(f"{a.platform} ({a.account_name})" for a in accounts)
-    return _oauth_result_redirect(success=True, message=f"Connected {names}.")
+    message = f"Connected {names}." if names else "Connected."
+    if warnings:
+        message += " " + " ".join(warnings)
+    return _oauth_result_redirect(success=bool(accounts), message=message)
 
 
 def _oauth_result_redirect(*, success: bool, message: str) -> RedirectResponse:

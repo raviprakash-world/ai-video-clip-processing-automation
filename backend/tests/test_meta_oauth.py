@@ -29,6 +29,11 @@ async def test_uses_config_id_when_configured(isolated_db, monkeypatch):
     assert query["client_id"] == ["app123"]
     assert query["response_type"] == ["code"]
     assert "state" in query
+    # Forces Facebook to re-prompt for the config's full current permission set
+    # rather than silently reusing whatever a user approved on a prior, possibly
+    # narrower authorization -- the actual root cause behind an Instagram lookup
+    # failing for a missing permission that was added to the config afterwards.
+    assert query["auth_type"] == ["rerequest"]
 
 
 async def test_falls_back_to_legacy_scope_without_config_id(isolated_db, monkeypatch):

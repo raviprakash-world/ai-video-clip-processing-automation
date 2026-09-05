@@ -35,6 +35,7 @@ from app.config import settings
 from app.db.base import session_scope
 from app.db.models import OAuthState, SocialAccount
 from app.publishing.meta_base import GRAPH_API_BASE, graph_request
+from app.publishing.states import PublishError
 from app.publishing.token_crypto import encrypt_token
 
 _OAUTH_STATE_TTL_MINUTES = 15
@@ -55,6 +56,13 @@ async def build_authorization_url() -> str:
         "redirect_uri": settings.META_OAUTH_REDIRECT_URI,
         "state": state,
         "response_type": "code",
+        # Without this, Facebook silently reuses whatever was approved on a
+        # user's FIRST authorization and never re-prompts for permissions
+        # added to the configuration afterwards -- a real failure mode this
+        # surfaced (Instagram lookup failing for missing pages_read_engagement
+        # after it was added to the config post-first-connect). Forcing
+        # rerequest makes every "Connect" click ask for the full current set.
+        "auth_type": "rerequest",
     }
     if settings.META_LOGIN_CONFIG_ID:
         params["config_id"] = settings.META_LOGIN_CONFIG_ID
@@ -75,7 +83,10 @@ async def _consume_state(state: str) -> bool:
         return True
 
 
-async def handle_callback(code: str, state: str) -> list[SocialAccount]:
+async def handle_callback(code: str, state: str) -> tuple[list[SocialAccount], list[str]]:
+    """Returns (connected_accounts, warnings). Facebook connecting successfully
+    is never blocked by an Instagram-specific problem -- that shows up as a
+    warning string instead of an exception, since Instagram is optional."""
     if not await _consume_state(state):
         raise ValueError("Invalid or expired OAuth state (possible CSRF attempt or a stale/replayed callback link).")
 
@@ -117,7 +128,13 @@ async def handle_callback(code: str, state: str) -> list[SocialAccount]:
     page_name = page.get("name", "")
     page_token = page.get("access_token", user_token)
 
+    permissions_response = await graph_request("GET", "/me/permissions", params={"access_token": user_token})
+    granted_permissions = {
+        p["permission"] for p in permissions_response.get("data", []) if p.get("status") == "granted"
+    }
+
     accounts: list[SocialAccount] = []
+    warnings: list[str] = []
     async with session_scope() as session:
         fb_id = f"facebook:{page_id}"
         fb_account = await session.get(SocialAccount, fb_id) or SocialAccount(id=fb_id, platform="facebook", account_id=page_id)
@@ -131,24 +148,51 @@ async def handle_callback(code: str, state: str) -> list[SocialAccount]:
         session.add(fb_account)
         accounts.append(fb_account)
 
-    ig_info = await graph_request(
-        "GET", f"/{page_id}", params={"fields": "instagram_business_account", "access_token": page_token}
-    )
-    ig_business = ig_info.get("instagram_business_account")
-    if ig_business and ig_business.get("id"):
-        ig_id = ig_business["id"]
-        ig_username_info = await graph_request("GET", f"/{ig_id}", params={"fields": "username", "access_token": page_token})
-        async with session_scope() as session:
-            ig_db_id = f"instagram:{ig_id}"
-            ig_account = await session.get(SocialAccount, ig_db_id) or SocialAccount(id=ig_db_id, platform="instagram", account_id=ig_id)
-            ig_account.platform = "instagram"
-            ig_account.account_id = ig_id
-            ig_account.account_name = ig_username_info.get("username", "")
-            ig_account.access_token_encrypted = encrypt_token(page_token)
-            ig_account.token_expires_at = expires_at
-            ig_account.status = "CONNECTED"
-            ig_account.extra = {"page_id": page_id, "ig_business_account_id": ig_id}
-            session.add(ig_account)
-            accounts.append(ig_account)
+    # Instagram linkage is a bonus on top of Facebook, not a hard requirement --
+    # a permission problem here must not make the whole connect attempt look
+    # like it failed when Facebook itself (already saved above) is fine. If it
+    # can't be checked, say exactly why (including which permissions actually
+    # came back granted) instead of surfacing Meta's generic (#100) error.
+    if "pages_read_engagement" not in granted_permissions and "instagram_basic" not in granted_permissions:
+        warnings.append(
+            "Instagram not linked: Meta did not grant 'pages_read_engagement' or 'instagram_basic' this time "
+            f"(granted permissions: {', '.join(sorted(granted_permissions)) or 'none'}). "
+            "In the Facebook Login for Business configuration, confirm both permissions are checked and saved, "
+            "then remove the app at facebook.com -> Settings -> Apps and Websites and reconnect for a fully fresh consent."
+        )
+    else:
+        try:
+            ig_info = await graph_request(
+                "GET", f"/{page_id}", params={"fields": "instagram_business_account", "access_token": page_token}
+            )
+        except PublishError as exc:
+            warnings.append(f"Instagram not linked: {exc.message}")
+            ig_info = {}
 
-    return accounts
+        ig_business = ig_info.get("instagram_business_account")
+        if ig_business and ig_business.get("id"):
+            ig_id = ig_business["id"]
+            ig_username_info = await graph_request(
+                "GET", f"/{ig_id}", params={"fields": "username", "access_token": page_token}
+            )
+            async with session_scope() as session:
+                ig_db_id = f"instagram:{ig_id}"
+                ig_account = await session.get(SocialAccount, ig_db_id) or SocialAccount(
+                    id=ig_db_id, platform="instagram", account_id=ig_id
+                )
+                ig_account.platform = "instagram"
+                ig_account.account_id = ig_id
+                ig_account.account_name = ig_username_info.get("username", "")
+                ig_account.access_token_encrypted = encrypt_token(page_token)
+                ig_account.token_expires_at = expires_at
+                ig_account.status = "CONNECTED"
+                ig_account.extra = {"page_id": page_id, "ig_business_account_id": ig_id}
+                session.add(ig_account)
+                accounts.append(ig_account)
+        elif not warnings:
+            warnings.append(
+                "Instagram not linked: this Facebook Page has no linked Instagram professional "
+                "(Business/Creator) account. Link one in Meta Business Suite -> your Page -> Linked Accounts."
+            )
+
+    return accounts, warnings

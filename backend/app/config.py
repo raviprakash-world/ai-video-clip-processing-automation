@@ -21,9 +21,20 @@ def _float(name: str, default: float) -> float:
     return float(val) if val else default
 
 
+# Default storage location is always the actual project root's storage/ dir,
+# regardless of the current working directory uvicorn happens to be launched
+# from (`cd backend && uvicorn ...` vs. running from the project root) --
+# a bare relative "storage" resolved against CWD silently created a second,
+# divergent storage/ directory under backend/ when launched from there.
+# An explicit STORAGE_ROOT env var still resolves against CWD, matching how
+# an operator who sets it explicitly would expect a relative path to behave.
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+_DEFAULT_STORAGE_ROOT = _PROJECT_ROOT / "storage"
+
+
 class Settings:
     # Storage
-    STORAGE_ROOT: Path = Path(os.environ.get("STORAGE_ROOT", "storage")).resolve()
+    STORAGE_ROOT: Path = Path(os.environ.get("STORAGE_ROOT") or _DEFAULT_STORAGE_ROOT).resolve()
     UPLOADS_DIR: Path = STORAGE_ROOT / "uploads"
     JOBS_DIR: Path = STORAGE_ROOT / "jobs"
     IDEMPOTENCY_INDEX_PATH: Path = STORAGE_ROOT / "idempotency_index.json"
