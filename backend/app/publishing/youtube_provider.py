@@ -66,8 +66,7 @@ class YouTubePublishingProvider(PublishingProvider):
         try:
             await asyncio.to_thread(_refresh)
         except RefreshError:
-            account.status = "EXPIRED"
-            return account
+            return await _mark_expired(account)
 
         async with session_scope() as session:
             db_account = await session.get(SocialAccount, account.id)
@@ -114,6 +113,13 @@ class YouTubePublishingProvider(PublishingProvider):
 
         try:
             response = await asyncio.to_thread(_upload)
+        except RefreshError as exc:
+            # creds carry no expiry, so google-api-python-client refreshes lazily inside the
+            # upload; a revoked/expired refresh token lands here, not in refresh_token_if_needed.
+            await _mark_expired(account)
+            raise PublishError(
+                "YouTube authorization expired or was revoked -- reconnect YouTube.", error_class=ErrorClass.AUTH
+            ) from exc
         except HttpError as exc:
             raise PublishError(str(exc), error_class=_classify_http_error(exc), http_status=exc.resp.status) from exc
         except (TimeoutError, ConnectionError) as exc:
@@ -123,6 +129,17 @@ class YouTubePublishingProvider(PublishingProvider):
         if not video_id:
             raise PublishError("YouTube upload succeeded but returned no video id.", error_class=ErrorClass.PERMANENT)
         return PublishResult(external_post_id=video_id)
+
+
+async def _mark_expired(account: SocialAccount) -> SocialAccount:
+    """Persist EXPIRED so the cost guard / UI stop reporting YouTube as AVAILABLE."""
+    async with session_scope() as session:
+        db_account = await session.get(SocialAccount, account.id)
+        if db_account:
+            db_account.status = "EXPIRED"
+            account = db_account
+    account.status = "EXPIRED"
+    return account
 
 
 def _classify_http_error(exc: HttpError) -> ErrorClass:
